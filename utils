@@ -1,0 +1,260 @@
+const fetch = require('node-fetch')
+const FormData = require('form-data')
+const fs = require('fs')
+const { fromBuffer } = require('file-type')
+const resizeImage = require('./imageProcessing')
+
+/**
+ *Fetch Json from Url
+ *
+ *@param {String} url
+ *@param {Object} options
+ */
+
+const fetchJson = (url, options) =>
+    new Promise((resolve, reject) =>
+        fetch(url, options)
+            .then(response => response.json())
+            .then(json => resolve(json))
+            .catch(err => {
+                console.error(err)
+                reject(err)
+            })
+    )
+
+/**
+ * Fetch Text from Url
+ *
+ * @param {String} url
+ * @param {Object} options
+ */
+
+const fetchText = (url, options) => {
+    return new Promise((resolve, reject) => {
+        return fetch(url, options)
+            .then(response => response.text())
+            .then(text => resolve(text))
+            .catch(err => {
+                console.error(err)
+                reject(err)
+            })
+    })
+}
+
+/**
+ * Fetch base64 from url
+ * @param {String} url
+ */
+
+const fetchBase64 = (url, mimetype) => {
+    return new Promise((resolve, reject) => {
+        console.log('Get base64 from:', url)
+        return fetch(url)
+            .then((res) => {
+                const _mimetype = mimetype || res.headers.get('content-type')
+                res.buffer()
+                    .then((result) => resolve(`data:${_mimetype};base64,` + result.toString('base64')))
+            })
+            .catch((err) => {
+                console.error(err)
+                reject(err)
+            })
+    })
+}
+
+/**
+ * Upload Image to Telegra.ph
+ *
+ * @param  {String} base64 image buffer
+ * @param  {Boolean} resize
+ */
+
+const uploadImages = (buffData, type) => {
+    // eslint-disable-next-line no-async-promise-executor
+    return new Promise(async (resolve, reject) => {
+        const { ext } = await fromBuffer(buffData)
+        const filePath = 'utils/tmp.' + ext
+        const _buffData = type ? await resizeImage(buffData, false) : buffData
+        fs.writeFile(filePath, _buffData, { encoding: 'base64' }, (err) => {
+            if (err) return reject(err)
+            console.log('Uploading image to telegra.ph server...')
+            const fileData = fs.readFileSync(filePath)
+            const form = new FormData()
+            form.append('file', fileData, 'tmp.' + ext)
+            fetch('https://telegra.ph/upload', {
+                method: 'POST',
+                body: form
+            })
+                .then(res => res.json())
+                .then(res => {
+                    if (res.error) return reject(res.error)
+                    resolve('https://telegra.ph' + res[0].src)
+                })
+                .then(() => fs.unlinkSync(filePath))
+                .catch(err => reject(err))
+        })
+    })
+}
+
+module.exports = {
+    fetchJson,
+    fetchText,
+    fetchBase64,
+    uploadImages
+}
+
+const sharp = require('sharp')
+const { fromBuffer } = require('file-type')
+
+/**
+ * Resize image to buffer or base64
+ * @param  {Buffer} bufferdata
+ * @param  {Boolean} encode
+ * @param  {String} mimType
+ */
+// eslint-disable-next-line no-async-promise-executor
+module.exports = resizeImage = (buff, encode) => new Promise(async (resolve, reject) => {
+    console.log('Resizeing image...')
+    const { mime } = await fromBuffer(buff)
+    sharp(buff, { failOnError: false })
+        .resize(512, 512)
+        .toBuffer()
+        .then(resizedImageBuffer => {
+            if (!encode) return resolve(resizedImageBuffer)
+            console.log('Create base64 from resizedImageBuffer...')
+            const resizedImageData = resizedImageBuffer.toString('base64')
+            const resizedBase64 = `data:${mime};base64,${resizedImageData}`
+            resolve(resizedBase64)
+        })
+        .catch(error => reject(error))
+})
+
+const request = require('request')
+const fs = require('fs-extra')
+const chalk = require('chalk')
+const moment = require('moment-timezone')
+moment.tz.setDefault('Asia/Jakarta').locale('id')
+
+/**
+ * Get text with color
+ * @param  {String} text
+ * @param  {String} color
+ * @return  {String} Return text with color
+ */
+const color = (text, color) => {
+    return !color ? chalk.blueBright(text) : chalk.keyword(color)(text)
+}
+
+// Message type Log
+const messageLog = (fromMe, type) => updateJson('utils/stat.json', (data) => {
+    (fromMe) ? (data.sent[type]) ? data.sent[type] += 1 : data.sent[type] = 1 : (data.receive[type]) ? data.receive[type] += 1 : data.receive[type] = 1
+    return data
+})
+
+/**
+ * Get Time duration
+ * @param  {Date} timestamp
+ * @param  {Date} now
+ */
+const processTime = (timestamp, now) => {
+    // timestamp => timestamp when message was received
+    return moment.duration(now - moment(timestamp * 1000)).asSeconds()
+}
+
+/**
+ * is it url?
+ * @param  {String} url
+ */
+const isUrl = (url) => {
+    return url.match(new RegExp(/https?:\/\/(www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_+.~#?&/=]*)/gi))
+}
+
+// Message Filter / Message Cooldowns
+const usedCommandRecently = new Set()
+
+/**
+ * Check is number filtered
+ * @param  {String} from
+ */
+const isFiltered = (from) => {
+    return !!usedCommandRecently.has(from)
+}
+
+/**
+ *Download any media from URL
+ *@param {String} url
+ *@param {Path} locate
+ *@param {Callback} callback
+ */
+const download = (url, path, callback) => {
+  request.head(url, () => {
+    request(url)
+      .pipe(fs.createWriteStream(path))
+      .on('close', callback)
+  })
+}
+
+
+/**
+ * Add number to filter
+ * @param  {String} from
+ */
+const addFilter = (from) => {
+    usedCommandRecently.add(from)
+    setTimeout(() => {
+        return usedCommandRecently.delete(from)
+    }, 5000) // 5sec is delay before processing next command
+}
+
+module.exports = {
+    msgFilter: {
+        isFiltered,
+        addFilter
+    },
+    processTime,
+    isUrl,
+    color,
+    messageLog,
+	download
+}
+
+/**
+ * Get Client Options
+ * @param  {Function} start function
+ * @param  {Boolean} headless
+ */
+
+module.exports = options = (headless, start) => {
+    const options = {
+        sessionId: 'ARUGA',
+        headless: headless,
+        qrTimeout: 0,
+        authTimeout: 0,
+        restartOnCrash: start,
+        cacheEnabled: false,
+        useChrome: true,
+        killProcessOnBrowserClose: true,
+        throwErrorOnTosBlock: false,
+        chromiumArgs: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--aggressive-cache-discard',
+            '--disable-cache',
+            '--disable-application-cache',
+            '--disable-offline-load-stale-cache',
+            '--disk-cache-size=0'
+        ]
+    }
+    return options
+}
+
+{
+	"sent": {
+
+	},
+	"receive": {
+
+	}
+}
+
+
